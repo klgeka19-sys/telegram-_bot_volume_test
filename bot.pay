@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import edge_tts
 
 # Сюда при запуске подставляется токен от @BotFather
-BOT_TOKEN = BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 # Простая временная память для примера (в рабочем боте заменим на облачную базу)
