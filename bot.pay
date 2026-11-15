@@ -1,0 +1,102 @@
+import asyncio
+import os
+from aiohttp import web
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, FSInputFile
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+import edge_tts
+
+# Сюда при запуске подставляется токен от @BotFather
+BOT_TOKEN = "ТВОЙ_ТОКЕН_БОТА"
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# Простая временная память для примера (в рабочем боте заменим на облачную базу)
+user_energy = {}
+
+# 1. КОМАНДА /START И ВЫДАЧА СТАРТОВОЙ ЭНЕРГИИ
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    user_id = message.from_user.id
+    if user_id not in user_energy:
+        user_energy[user_id] = 30  # Даём 30 бесплатной энергии новичку
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚡ Купить 50 энергии за 50 ⭐", callback_data="buy_stars")
+    
+    await message.answer(
+        f"Привет! Отправь мне любой текст, и я озвучу его красивым голосом.\n"
+        f"Твоя энергия: {user_energy[user_id]} ⚡ (1 озвучка = 10 ⚡)",
+        reply_markup=kb.as_markup()
+    )
+
+# 2. ВЫСТАВЛЕНИЕ СЧЕТА В TELEGRAM STARS
+@dp.callback_query(F.data == "buy_stars")
+async def send_invoice(callback: CallbackQuery):
+    await callback.message.answer_invoice(
+        title="Пакет энергии (50 ⚡)",
+        description="Пополнение баланса для озвучки текста",
+        payload="energy_50",          # Метка товара для проверки
+        currency="XTR",               # Валюта XTR — это и есть Telegram Stars
+        prices=[LabeledPrice(label="50 энергии", amount=50)]  # Цена: 50 звёзд
+    )
+    await callback.answer()
+
+# 3. ПРОВЕРКА ПЕРЕД ОПЛАТОЙ (ЗАЩИТА, ЧТОБЫ ДЕНЬГИ НЕ СПИСАЛИСЬ ВПУСТУЮ)
+@dp.pre_checkout_query()
+async def pre_checkout(query: PreCheckoutQuery):
+    await query.answer(ok=True)  # Бот отвечает Telegram: "Я не сплю, готов выдать энергию!"
+
+# 4. НАЧИСЛЕНИЕ ЭНЕРГИИ ПОСЛЕ УСПЕШНОЙ ОПЛАТЫ
+@dp.message(F.successful_payment)
+async def payment_success(message: Message):
+    user_id = message.from_user.id
+    user_energy[user_id] = user_energy.get(user_id, 0) + 50
+    await message.answer(f"✅ Оплата прошла! Начислено +50 ⚡.\nТекущий баланс: {user_energy[user_id]} ⚡")
+
+# 5. ОЗВУЧКА ЛЮБОГО ТЕКСТА ПОЛЬЗОВАТЕЛЯ
+@dp.message(F.text)
+async def make_voice(message: Message):
+    user_id = message.from_user.id
+    energy = user_energy.get(user_id, 0)
+
+    # Проверяем, хватает ли энергии
+    if energy < 10:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⚡ Купить 50 энергии за 50 ⭐", callback_data="buy_stars")
+        await message.answer("❌ Недостаточно энергии! Пополни баланс:", reply_markup=kb.as_markup())
+        return
+
+    wait_msg = await message.answer("🎙 Озвучиваю текст...")
+    file_name = f"voice_{user_id}.mp3"
+
+    # Генерируем голос (бесплатный женский голос Светлана)
+    tts = edge_tts.Communicate(message.text, voice="ru-RU-SvetlanaNeural")
+    await tts.save(file_name)
+
+    # Списываем 10 энергии и отправляем голосовое сообщение
+    user_energy[user_id] -= 10
+    await message.answer_voice(
+        voice=FSInputFile(file_name),
+        caption=f"Готово! Осталось энергии: {user_energy[user_id]} ⚡"
+    )
+    await wait_msg.delete()
+    os.remove(file_name)  # Удаляем временный файл, чтобы не забивать память Render
+
+# 6. «ПИНОК» ДЛЯ RENDER, ЧТОБЫ БОТ НЕ ЗАСЫПАЛ
+async def handle_ping(request):
+    return web.Response(text="Бот работает и не спит!")
+
+async def main():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
+    
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
