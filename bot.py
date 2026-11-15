@@ -1,91 +1,220 @@
 import asyncio
 import os
+import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, BufferedInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import edge_tts
 
-# Сюда при запуске подставляется токен от @BotFather
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-# Простая временная память для примера (в рабочем боте заменим на облачную базу)
-user_energy = {}
 
-# 1. КОМАНДА /START И ВЫДАЧА СТАРТОВОЙ ЭНЕРГИИ
-@dp.message(CommandStart())
-async def cmd_start(message: Message):
-    user_id = message.from_user.id
-    if user_id not in user_energy:
-        user_energy[user_id] = 30  # Даём 30 бесплатной энергии новичку
+# Память пользователей (в рабочем проекте перенесём в облачную базу)
+users = {}
 
+# Настройки голосов: ключ -> (Название на кнопке, цена в алмазах, тип, ID голоса)
+VOICES = {
+    "sveta": ("👩 Светлана (RU)", 15, "edge", "ru-RU-SvetlanaNeural"),
+    "dima": ("👨 Дмитрий (RU)", 15, "edge", "ru-RU-DmitryNeural"),
+    "aria": ("🇺🇸 Aria (EN)", 15, "edge", "en-US-AriaNeural"),
+    "vip_rachel": ("👑 VIP Эмоции (ElevenLabs)", 100, "eleven", "21m00Tcm4TlvDq8ikWAM"),
+}
+
+# Пакеты алмазов: ключ -> (Название, кол-во алмазов, цена в Звёздах)
+PACKAGES = {
+    "pack_test": ("🧪 Тест: 10 💎", 10, 1),
+    "pack_150": ("💎 150 алмазов", 150, 50),
+    "pack_750": ("💎 750 алмазов", 750, 250),
+    "pack_2000": ("💎 2000 алмазов", 2000, 500),
+}
+
+def get_user(user_id):
+    if user_id not in users:
+        users[user_id] = {"diamonds": 30, "voice": "sveta"}
+    return users[user_id]
+
+def main_menu(user_id):
+    u = get_user(user_id)
+    v_name, v_price, _, _ = VOICES[u["voice"]]
     kb = InlineKeyboardBuilder()
-    kb.button(text="⚡ Купить 50 энергии за 50 ⭐", callback_data="buy_stars")
-    
-    await message.answer(
-        f"Привет! Отправь мне любой текст, и я озвучу его красивым голосом.\n"
-        f"Твоя энергия: {user_energy[user_id]} ⚡ (1 озвучка = 10 ⚡)",
-        reply_markup=kb.as_markup()
+    kb.button(text="🎙 Выбрать голос", callback_data="menu_voices")
+    kb.button(text="💎 Пополнить баланс", callback_data="menu_shop")
+    kb.adjust(1)
+    return (
+        f"✨ **ИИ Озвучка текста**\n\n"
+        f"💎 Твой баланс: **{u['diamonds']} алмазов**\n"
+        f"🎙 Выбранный голос: **{v_name}** ({v_price} 💎 за текст)\n\n"
+        f"Просто отправь мне любой текст сообщением, и я сразу его озвучу!",
+        kb.as_markup()
     )
 
-# 2. ВЫСТАВЛЕНИЕ СЧЕТА В TELEGRAM STARS
-@dp.callback_query(F.data == "buy_stars")
-async def send_invoice(callback: CallbackQuery):
-    await callback.message.answer_invoice(
-        title="Пакет энергии (50 ⚡)",
-        description="Пополнение баланса для озвучки текста",
-        payload="energy_50",          # Метка товара для проверки
-        currency="XTR",               # Валюта XTR — это и есть Telegram Stars
-        prices=[LabeledPrice(label="50 энергии", amount=50)]  # Цена: 50 звёзд
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    text, markup = main_menu(message.from_user.id)
+    await message.answer(text, reply_markup=markup, parse_mode="Markdown")
+
+@dp.callback_query(F.data == "back_main")
+async def back_to_main(callback: CallbackQuery):
+    text, markup = main_menu(callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+    await callback.answer()
+
+# МЕНЮ ВЫБОРА ГОЛОСА
+@dp.callback_query(F.data == "menu_voices")
+async def show_voices(callback: CallbackQuery):
+    u = get_user(callback.from_user.id)
+    kb = InlineKeyboardBuilder()
+    for key, (name, price, _, _) in VOICES.items():
+        mark = "✅ " if u["voice"] == key else ""
+        kb.button(text=f"{mark}{name} — {price} 💎", callback_data=f"set_voice:{key}")
+    kb.button(text="🔙 Назад", callback_data="back_main")
+    kb.adjust(1)
+    await callback.message.edit_text(
+        "🎙 **Выбери голос для озвучки:**\n\n"
+        "• Обычные голоса — до 500 символов.\n"
+        "• VIP голос — живые эмоции (до 150 символов).",
+        reply_markup=kb.as_markup(),
+        parse_mode="Markdown"
     )
     await callback.answer()
 
-# 3. ПРОВЕРКА ПЕРЕД ОПЛАТОЙ (ЗАЩИТА, ЧТОБЫ ДЕНЬГИ НЕ СПИСАЛИСЬ ВПУСТУЮ)
+@dp.callback_query(F.data.startswith("set_voice:"))
+async def select_voice(callback: CallbackQuery):
+    voice_key = callback.data.split(":")[1]
+    u = get_user(callback.from_user.id)
+    u["voice"] = voice_key
+    text, markup = main_menu(callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+    await callback.answer("Голос выбран!")
+
+# МЕНЮ ПОКУПКИ АЛМАЗОВ
+@dp.callback_query(F.data == "menu_shop")
+async def show_shop(callback: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    for key, (title, diamonds, stars) in PACKAGES.items():
+        kb.button(text=f"{title} — Оплатить {stars} ⭐", callback_data=f"buy:{key}")
+    kb.button(text="🔙 Назад", callback_data="back_main")
+    kb.adjust(1)
+    await callback.message.edit_text(
+        "💎 **Пополнение баланса алмазов**\n\n"
+        "Выбери подходящий пакет. Оплата проходит мгновенно через Telegram Stars ⭐:",
+        reply_markup=kb.as_markup(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+# ВЫСТАВЛЕНИЕ СЧЁТА В TELEGRAM STARS (ИСПРАВЛЕННОЕ)
+@dp.callback_query(F.data.startswith("buy:"))
+async def send_stars_invoice(callback: CallbackQuery):
+    pack_key = callback.data.split(":")[1]
+    title, diamonds, stars = PACKAGES[pack_key]
+    
+    await callback.message.answer_invoice(
+        title=title,
+        description=f"Пополнение баланса на {diamonds} алмазов для озвучки текста",
+        payload=f"diamonds:{diamonds}",
+        provider_token="",  # Обязательно пустая строка для Telegram Stars!
+        currency="XTR",
+        prices=[LabeledPrice(label=f"{diamonds} алмазов", amount=stars)]
+    )
+    await callback.answer()
+
 @dp.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
-    await query.answer(ok=True)  # Бот отвечает Telegram: "Я не сплю, готов выдать энергию!"
+    await query.answer(ok=True)
 
-# 4. НАЧИСЛЕНИЕ ЭНЕРГИИ ПОСЛЕ УСПЕШНОЙ ОПЛАТЫ
 @dp.message(F.successful_payment)
-async def payment_success(message: Message):
-    user_id = message.from_user.id
-    user_energy[user_id] = user_energy.get(user_id, 0) + 50
-    await message.answer(f"✅ Оплата прошла! Начислено +50 ⚡.\nТекущий баланс: {user_energy[user_id]} ⚡")
+async def on_payment_success(message: Message):
+    payload = message.successful_payment.invoice_payload
+    diamonds_added = int(payload.split(":")[1])
+    u = get_user(message.from_user.id)
+    u["diamonds"] += diamonds_added
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎙 Перейти к озвучке", callback_data="back_main")
+    await message.answer(
+        f"✅ **Оплата прошла успешно!**\n\n"
+        f"Начислено: **+{diamonds_added} 💎**\n"
+        f"Текущий баланс: **{u['diamonds']} 💎**",
+        reply_markup=kb.as_markup(),
+        parse_mode="Markdown"
+    )
 
-# 5. ОЗВУЧКА ЛЮБОГО ТЕКСТА ПОЛЬЗОВАТЕЛЯ
+# ГЕНЕРАЦИЯ ГОЛОСА ПО ТЕКСТУ
 @dp.message(F.text)
-async def make_voice(message: Message):
-    user_id = message.from_user.id
-    energy = user_energy.get(user_id, 0)
+async def generate_voice(message: Message):
+    u = get_user(message.from_user.id)
+    v_name, price, v_type, v_id = VOICES[u["voice"]]
+    text = message.text.strip()
 
-    # Проверяем, хватает ли энергии
-    if energy < 10:
+    if u["diamonds"] < price:
         kb = InlineKeyboardBuilder()
-        kb.button(text="⚡ Купить 50 энергии за 50 ⭐", callback_data="buy_stars")
-        await message.answer("❌ Недостаточно энергии! Пополни баланс:", reply_markup=kb.as_markup())
+        kb.button(text="💎 Купить алмазы", callback_data="menu_shop")
+        await message.answer(
+            f"❌ Недостаточно алмазов!\nДля этого голоса нужно **{price} 💎**, а у тебя **{u['diamonds']} 💎**.",
+            reply_markup=kb.as_markup(),
+            parse_mode="Markdown"
+        )
         return
 
-    wait_msg = await message.answer("🎙 Озвучиваю текст...")
-    file_name = f"voice_{user_id}.mp3"
+    if v_type == "eleven" and len(text) > 150:
+        await message.answer("⚠️ Для **VIP-голоса** максимум **150 символов** за один раз. Сократи текст и отправь снова!", parse_mode="Markdown")
+        return
 
-    # Генерируем голос (бесплатный женский голос Светлана)
-    tts = edge_tts.Communicate(message.text, voice="ru-RU-SvetlanaNeural")
-    await tts.save(file_name)
+    if v_type == "edge" and len(text) > 500:
+        await message.answer("⚠️ Максимальная длина текста — **500 символов** за раз.", parse_mode="Markdown")
+        return
 
-    # Списываем 10 энергии и отправляем голосовое сообщение
-    user_energy[user_id] -= 10
-    await message.answer_voice(
-        voice=FSInputFile(file_name),
-        caption=f"Готово! Осталось энергии: {user_energy[user_id]} ⚡"
-    )
-    await wait_msg.delete()
-    os.remove(file_name)  # Удаляем временный файл, чтобы не забивать память Render
+    wait_msg = await message.answer("🎙 Озвучиваю текст, подожди пару секунд...")
 
-# 6. «ПИНОК» ДЛЯ RENDER, ЧТОБЫ БОТ НЕ ЗАСЫПАЛ
+    try:
+        if v_type == "edge":
+            tts = edge_tts.Communicate(text, voice=v_id)
+            audio_bytes = bytearray()
+            async for chunk in tts.stream():
+                if chunk["type"] == "audio":
+                    audio_bytes.extend(chunk["data"])
+            audio_data = bytes(audio_bytes)
+        else:
+            if not ELEVENLABS_API_KEY:
+                await wait_msg.edit_text("⚙️ VIP-голос пока настраивается администратором. Выбери обычный голос в меню!")
+                return
+            url = f"https://elevenlabs.io{v_id}"
+            headers = {
+                "xi-api-key": ELEVENLABS_API_KEY,
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status != 200:
+                        await wait_msg.edit_text("❌ Ошибка сервиса VIP-озвучки. Попробуй позже или выбери обычный голос.")
+                        return
+                    audio_data = await resp.read()
+
+        u["diamonds"] -= price
+        voice_file = BufferedInputFile(audio_data, filename="voice.ogg")
+        await message.answer_voice(
+            voice=voice_file,
+            caption=f"🎙 {v_name}\n💎 Осталось: {u['diamonds']} алмазов"
+        )
+        await wait_msg.delete()
+
+    except Exception:
+        await wait_msg.edit_text("❌ Произошла ошибка при озвучке. Попробуй отправить текст ещё раз.")
+
+# ПИНОК ДЛЯ RENDER
 async def handle_ping(request):
-    return web.Response(text="Бот работает и не спит!")
+    return web.Response(text="Bot is alive!")
 
 async def main():
     app = web.Application()
@@ -93,8 +222,8 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
-    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
