@@ -23,6 +23,8 @@ VOICES = {
     "dima": ("👨 Дмитрий (RU)", 15, "edge", "ru-RU-DmitryNeural"),
     "aria": ("🇺🇸 Aria (EN)", 15, "edge", "en-US-AriaNeural"),
     "vip_rachel": ("👑 VIP Эмоции (ElevenLabs)", 100, "eleven", "21m00Tcm4TlvDq8ikWAM"),
+    "vip_narrator": ("👑 VIP Диктор (EN)", 100, "eleven", "7jynqzOvnVP89nA7TB0m"),
+    "vip_warm_man": ("👑 VIP Тёплый мужской (EN)", 100, "eleven", "JYUzXNeyCPmymMkfcicu"),
 }
 
 # Пакеты алмазов: ключ -> (Название, кол-во алмазов, цена в Звёздах)
@@ -77,7 +79,7 @@ async def show_voices(callback: CallbackQuery):
     await callback.message.edit_text(
         "🎙 **Выбери голос для озвучки:**\n\n"
         "• Обычные голоса — до 500 символов.\n"
-        "• VIP голос — живые эмоции (до 150 символов).",
+        "• VIP голоса — живые эмоции (до 150 символов).",
         reply_markup=kb.as_markup(),
         parse_mode="Markdown"
     )
