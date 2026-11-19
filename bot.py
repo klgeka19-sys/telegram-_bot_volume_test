@@ -108,7 +108,7 @@ async def show_shop(callback: CallbackQuery):
     )
     await callback.answer()
 
-# ВЫСТАВЛЕНИЕ СЧЁТА В TELEGRAM STARS (ИСПРАВЛЕННОЕ)
+# ВЫСТАВЛЕНИЕ СЧЁТА В TELEGRAM STARS
 @dp.callback_query(F.data.startswith("buy:"))
 async def send_stars_invoice(callback: CallbackQuery):
     pack_key = callback.data.split(":")[1]
@@ -212,9 +212,22 @@ async def generate_voice(message: Message):
     except Exception:
         await wait_msg.edit_text("❌ Произошла ошибка при озвучке. Попробуй отправить текст ещё раз.")
 
-# ПИНОК ДЛЯ RENDER
+# ПИНОК ДЛЯ RENDER (приёмник + автопинг)
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
+
+async def keep_alive():
+    url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not url:
+        return
+    while True:
+        await asyncio.sleep(600)  # Стучимся каждые 10 минут
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    pass
+        except Exception:
+            pass
 
 async def main():
     app = web.Application()
@@ -222,6 +235,8 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
+    
+    asyncio.create_task(keep_alive())  # Запускаем фоновый пинок
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
