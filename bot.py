@@ -16,6 +16,7 @@ dp = Dispatcher()
 
 # Память пользователей (в рабочем проекте перенесём в облачную базу)
 users = {}
+admin_ids = set()
 
 # Настройки голосов: ключ -> (Название на кнопке, цена в алмазах, тип, ID голоса)
 VOICES = {
@@ -47,9 +48,10 @@ def main_menu(user_id):
     kb.button(text="🎙 Выбрать голос", callback_data="menu_voices")
     kb.button(text="💎 Пополнить баланс", callback_data="menu_shop")
     kb.adjust(1)
+    bal_text = "♾ Безлимит (Админ)" if user_id in admin_ids else f"**{u['diamonds']} алмазов**"
     return (
         f"✨ **ИИ Озвучка текста**\n\n"
-        f"💎 Твой баланс: **{u['diamonds']} алмазов**\n"
+        f"💎 Твой баланс: {bal_text}\n"
         f"🎙 Выбранный голос: **{v_name}** ({v_price} 💎 за текст)\n\n"
         f"Просто отправь мне любой текст сообщением, и я сразу его озвучу!",
         kb.as_markup()
@@ -59,6 +61,24 @@ def main_menu(user_id):
 async def cmd_start(message: Message):
     text, markup = main_menu(message.from_user.id)
     await message.answer(text, reply_markup=markup, parse_mode="Markdown")
+
+# СЕКРЕТНЫЕ КОМАНДЫ ДЛЯ ТЕБЯ (АДМИНА)
+@dp.message(F.text == "/vip")
+async def activate_vip_admin(message: Message):
+    user_id = message.from_user.id
+    admin_ids.add(user_id)
+    u = get_user(user_id)
+    u["diamonds"] += 10000
+    await message.answer(
+        f"👑 **Режим владельца активирован!**\n\n"
+        f"• Твой числовой ID: `{user_id}`\n"
+        f"• Начислено **+10 000 💎**, алмазы больше не списываются при тестах!",
+        parse_mode="Markdown"
+    )
+
+@dp.message(F.text == "/myid")
+async def show_my_id(message: Message):
+    await message.answer(f"🆔 Твой числовой Telegram ID: `{message.from_user.id}`", parse_mode="Markdown")
 
 @dp.callback_query(F.data == "back_main")
 async def back_to_main(callback: CallbackQuery):
@@ -150,11 +170,13 @@ async def on_payment_success(message: Message):
 # ГЕНЕРАЦИЯ ГОЛОСА ПО ТЕКСТУ
 @dp.message(F.text)
 async def generate_voice(message: Message):
-    u = get_user(message.from_user.id)
+    user_id = message.from_user.id
+    u = get_user(user_id)
     v_name, price, v_type, v_id = VOICES[u["voice"]]
     text = message.text.strip()
+    is_admin = user_id in admin_ids
 
-    if u["diamonds"] < price:
+    if not is_admin and u["diamonds"] < price:
         kb = InlineKeyboardBuilder()
         kb.button(text="💎 Купить алмазы", callback_data="menu_shop")
         await message.answer(
@@ -203,11 +225,16 @@ async def generate_voice(message: Message):
                         return
                     audio_data = await resp.read()
 
-        u["diamonds"] -= price
+        if not is_admin:
+            u["diamonds"] -= price
+            caption_bal = f"💎 Осталось: {u['diamonds']} алмазов"
+        else:
+            caption_bal = "👑 Режим админа (безлимит)"
+
         voice_file = BufferedInputFile(audio_data, filename="voice.ogg")
         await message.answer_voice(
             voice=voice_file,
-            caption=f"🎙 {v_name}\n💎 Осталось: {u['diamonds']} алмазов"
+            caption=f"🎙 {v_name}\n{caption_bal}"
         )
         await wait_msg.delete()
 
@@ -233,14 +260,12 @@ async def keep_alive():
 
 async def main():
     app = web.Application()
-    app.router.add_get("/", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
-    
-    asyncio.create_task(keep_alive())  # Запускаем фоновый пинок
-    await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    asyncio.run(main())
-    
+app.router.add_get("/", handle_ping)
+runner = web.AppRunner(app)
+await runner.setup()
+await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
+asyncio.create_task(keep_alive())  # Запускаем фоновый пинок
+await dp.start_polling(bot)
+if name == "main":
+asyncio.run(main())
